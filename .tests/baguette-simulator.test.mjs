@@ -24,3 +24,4 @@ import './baguette/viewer-session.test.cjs';
 import './baguette/review-invariants.test.cjs';
 import './baguette/page-rpc.test.cjs';
 import './baguette/device-identity.test.cjs';
+import './baguette/agent-health.test.cjs';
