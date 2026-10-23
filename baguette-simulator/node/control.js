@@ -13,7 +13,7 @@
 
   // Page state. `status` is the last successful status response; flags are page-local.
   const state = { status: null, lost: false, generation: null, zoom: { mode: 'fit' }, fitPct: 0, fullToolbar: false,
-    recovering: false, stopping: false, switching: false, phase: null, handledJob: null, lastTouch: 0, screenWidth: 0,
+    recovering: false, stopping: false, switching: false, phase: null, lastTouch: 0, screenWidth: 0,
     pose: null, viewport: null };
   // Inside the management view the device list names the device; show a title instead of the switcher.
   const hub = params.get('embed') === 'hub';
@@ -183,7 +183,7 @@
     label($('btn-home'), t.home, '⇧⌘H'); label($('btn-shot'), `${t.screenshot} · ${shotTo() === 'clipboard' ? t.shotToClipboard : t.shotToDesktop}`, '⌘S'); label($('btn-shot-menu'), t.shotTo);
     label($('btn-rotl'), t.rotateLeft, '⌘←'); label($('btn-rotr'), t.rotateRight, '⌘→');
     label($('zoom-out'), t.zoomOut, '⌘−'); label($('zoom-in'), t.zoomIn, '⌘+'); label($('btn-more'), t.more);
-    $('device-chip').title = s?.currentAppError ? t.appRecordUnreadable : t.devices;
+    $('device-chip').title = t.devices;
     renderPosture();
   }
   function renderOverlay() {
@@ -234,7 +234,13 @@
     try {
       const s = await api('status');
       state.status = s; state.lost = false;
-      trackSwitch(s);
+      // A completed selection may point at a stopped device. Use its own
+      // state immediately, never load its stream using the source's state.
+      if (s.device?.udid !== udid) s.device = s.devices?.find((d) => d.udid === udid);
+      if (!state.switching && s.device?.state === 'Booted' && s.viewerPlatform && (s.device.platform==='android'?'android':'ios')!==s.viewerPlatform) {
+        const opened=await api('open');
+        if(opened.url){const next=new URL(opened.url);for(const key of ['task','embed'])if(params.get(key))next.searchParams.set(key,params.get(key));location.replace(next.href);return;}
+      }
       if (!state.switching && s.device?.state === 'Booted' && s.ready) {
         let unavailable = false; try { unavailable = !!screen.contentDocument?.querySelector('[data-viewer-unavailable]'); } catch {}
         if (state.generation === null || screen.src === 'about:blank' || unavailable) load();
@@ -247,18 +253,6 @@
       if (state.lost !== true && screen.src !== 'about:blank') blank();
     }
     finally { checking = false; render(); }
-  }
-  function trackSwitch(s) {
-    const job = s.deviceJob, relevant = job && (job.sourceUdid === udid || job.targetUdid === udid);
-    if (relevant && job.state === 'running') { state.switching = true; state.phase = job.phase; state.switchTarget = job.targetUdid; if (screen.src !== 'about:blank') blank(); return; }
-    if (relevant && job.id !== state.handledJob && job.state !== 'running') {
-      state.handledJob = job.id; state.switching = false; state.phase = null;
-      if (job.activeUdid && job.activeUdid !== udid) adopt(job.activeUdid);
-      if (job.state === 'done') toast(t.switching.done, 'ok'); else toast(`${t.switching.failed} (${job.errorCode || 'SWITCH_FAILED'})`, 'error');
-      if (job.taskBindingError || job.appContextError) toast(t.switching.recordFailed, 'error');
-      return;
-    }
-    if (!relevant) state.switching = false;
   }
   function adopt(id) {
     udid = id; state.generation = null; state.screenWidth = 0;
@@ -309,6 +303,7 @@
     const to = shotTo();
     try {
       const r = await api('screenshot', { to });
+      if(to==='clipboard'&&r.clipboardPng){const bytes=Uint8Array.from(atob(r.clipboardPng),c=>c.charCodeAt(0));await navigator.clipboard.write([new ClipboardItem({'image/png':new Blob([bytes],{type:'image/png'})})]);}
       if (to === 'clipboard') toast(t.shotCopied, 'ok');
       else toast(t.shotDesktop, 'ok', r.path && { label: t.reveal, run: () => api('reveal', { path: r.path }).catch(() => {}) });
     }
@@ -418,12 +413,18 @@
   $('btn-more').addEventListener('click', () => {
     const on = live();
     showMenu($('btn-more'), [
+      ...(state.status?.device?.platform === 'android' ? [item(ICON.key, lang === 'zh-CN' ? '返回' : 'Back', () => native('__nativeBack'), { disabled: !on })] : []),
       item(ICON.shake, t.shake, () => native('__nativeShake'), { disabled: !on }),
       item(ICON.grid, t.appSwitcher, () => native('__nativeAppSwitcher'), { disabled: !on }),
+      ...(state.status?.device?.platform === 'android' ? [
+        item(ICON.key, lang === 'zh-CN' ? '复制设备剪贴板' : 'Copy device clipboard', () => native('__nativeCopy'), {disabled:!on}),
+        item(ICON.plus, lang === 'zh-CN' ? '导入 APK、图片或视频…' : 'Import APK, image or video…', () => native('__nativeImport'), {disabled:!on}),
+        item(ICON.camera, screen.contentWindow?.__nativeRecording?.() ? (lang === 'zh-CN' ? '停止录像并保存' : 'Stop recording & save') : (lang === 'zh-CN' ? '开始录像' : 'Start recording'), () => native('__nativeRecord'), {disabled:!on}),
+      ] : []),
       item(ICON.key, t.releaseKeys, release, { disabled: !on }),
       h('div', { class: 'sep' }),
       item(ICON.refresh, t.recover, recover, { disabled: state.recovering || state.switching }),
-      item(ICON.bar, t.advanced, () => { state.fullToolbar = !state.fullToolbar; load(); }, { role: 'menuitemcheckbox', 'aria-checked': String(state.fullToolbar) }),
+      state.status?.device?.platform !== 'android' ? item(ICON.bar, t.advanced, () => { state.fullToolbar = !state.fullToolbar; load(); }, { role: 'menuitemcheckbox', 'aria-checked': String(state.fullToolbar) }) : null,
       h('div', { class: 'sep' }),
       item(ICON.power, t.shutdown, confirmShutdown, { 'data-danger': true, disabled: !state.status || state.status.device?.state !== 'Booted' || state.switching }),
     ]);
@@ -434,8 +435,7 @@
     const paused = state.status?.settings?.enabled === false;
     showMenu($('device-chip'), [
       h('div', { class: 'head', text: t.devices }),
-      state.status?.currentAppError ? h('div', { class: 'head', role: 'status', text: t.appRecordUnreadable }) : null,
-      ...rows.map((d) => h('button', { class: 'item', role: 'menuitemradio', 'aria-checked': String(d.current), disabled: paused || !!state.status?.currentAppError || state.switching || !d.available || (d.current && d.tone === 'on'),
+      ...rows.map((d) => h('button', { class: 'item', role: 'menuitemradio', 'aria-checked': String(d.current), disabled: paused || state.switching || !d.available || d.current,
         title: d.current ? t.current : t.switchTo, onclick: () => { closeMenu(); switchTo(d.udid); } }, [
         h('span', { class: 'dot', 'data-tone': d.tone }),
         h('span', { class: 'label' }, [h('span', { text: d.name }), h('span', { class: 'sub', text: d.meta })]),
@@ -447,10 +447,19 @@
   });
   async function switchTo(targetUdid) {
     if (state.switching) return;
-    state.switching = true; state.phase = 'preparing'; state.switchTarget = targetUdid; state.handledJob = null; blank(); render();
+    state.switching = true; state.phase = 'preparing'; state.switchTarget = targetUdid; blank(); render();
     // Inside a task page the switch also moves that task to the new device.
-    try { await api('switch', { targetUdid, ...(params.get('task') ? { task: params.get('task') } : {}) }); }
-    catch (error) { state.switching = false; toast(`${t.switching.failed} (${error.code || 'SWITCH_FAILED'})`, 'error'); }
+    try {
+      const result = await api('switch', { targetUdid, ...(params.get('task') ? { task: params.get('task') } : {}) });
+      // The request returns its final result after selection and task binding.
+      // Shared status jobs belong to other pages and never change this page.
+      const job = result.job;
+      if (job.activeUdid && job.activeUdid !== udid) adopt(job.activeUdid);
+      if (job.state === 'done') toast(t.switching.done, 'ok'); else toast(`${t.switching.failed} (${job.errorCode || 'SWITCH_FAILED'})`, 'error');
+      if (job.taskBindingError || job.appContextError) toast(t.switching.recordFailed, 'error');
+    }
+    catch (error) { toast(`${t.switching.failed} (${error.code || 'SWITCH_FAILED'})`, 'error'); }
+    finally { state.switching = false; state.phase = null; }
     await check();
   }
 
